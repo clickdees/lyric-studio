@@ -362,6 +362,14 @@ function App(){
   const [trash,setTrash]=useState([]);
   const dragIdRef=useRef(null); const [dropId,setDropId]=useState(null);
   const [syncOffset,setSyncOffset]=useState(0);
+  // Non-destructive timeline edits. Clip times always reference the original audio source.
+  const [timelineClips,setTimelineClips]=useState([]);
+  const [selectedTimelineClipId,setSelectedTimelineClipId]=useState('');
+  const [timelineZoom,setTimelineZoom]=useState(1);
+  const [timelineHistory,setTimelineHistory]=useState([]);
+  const [timelineFuture,setTimelineFuture]=useState([]);
+  const timelineTrackRef=useRef(null), timelineDragRef=useRef(null), timelineClipsRef=useRef([]);
+  timelineClipsRef.current=timelineClips;
   const [caseMode,setCaseMode]=useState('original');
   const dcase=(s)=>caseMode==='lower'?String(s??'').toLowerCase():caseMode==='upper'?String(s??'').toUpperCase():String(s??'');
   // Animation controls are percentages of each lyric line's timed duration.
@@ -388,6 +396,11 @@ function App(){
   const [exporting,setExporting]=useState(false), [exportMsg,setExportMsg]=useState(''), [tab,setTab]=useState('sync'), [showLyrics,setShowLyrics]=useState(false);
   const adjTime=time+syncOffset;
   const current=useMemo(()=>lines.find(l=>adjTime>=l.start && adjTime<l.end), [lines,adjTime]);
+  const selectedTimelineClip=timelineClips.find(clip=>clip.id===selectedTimelineClipId)||timelineClips[0]||null;
+  const projectIn=timelineClips.length?timelineClips[0].start:0;
+  const projectOut=timelineClips.length?timelineClips[timelineClips.length-1].end:duration;
+  const timelineTotalDuration=timelineClips.reduce((sum,clip)=>sum+Math.max(0,clip.end-clip.start),0);
+  const timelineTicks=useMemo(()=>{const count=Math.max(2,Math.min(12,Math.ceil((duration||30)/10)+1));return Array.from({length:count},(_,i)=>({left:(i/(count-1))*100,time:(duration||0)*i/(count-1)}));},[duration]);
   const filteredFonts=useMemo(()=>FONT_LIBRARY.filter(item=>(fontCategory==='All fonts'||item.category===fontCategory)&&(`${item.family} ${item.category} ${item.description}`).toLowerCase().includes(fontSearch.trim().toLowerCase())),[fontCategory,fontSearch]);
   const fontRequestKey=useMemo(()=>Array.from(new Set([font,headerFont||font,footerFont||font,...lines.flatMap(line=>[line.fontFamily,...(line.wordStyles||[]).map(style=>style?.fontFamily)])].filter(Boolean))).sort().join('|'),[font,headerFont,footerFont,lines]);
   useEffect(()=>{ if(current) setActiveId(current.id); },[current?.id]);
@@ -395,12 +408,149 @@ function App(){
   useEffect(()=>{ let live=true; const families=fontRequestKey.split('|').filter(Boolean); Promise.all(families.map(family=>ensureGoogleFontReady(family,Math.max(64,Math.round(fontSize*1.5))))).then(()=>{if(live)setFontRevision(value=>value+1);}); return ()=>{live=false;}; },[fontRequestKey]);
   useEffect(()=>()=>{ if(audioUrl) URL.revokeObjectURL(audioUrl); if(rafRef.current) cancelAnimationFrame(rafRef.current); },[]);
   const updateLine=(id,patch)=>setLines(old=>old.map((l,i)=>{if(l.id!==id)return l;return {...l,...patch};}).map((l,i,a)=>({...l,end: i<a.length-1 ? Math.max(l.start, a[i+1].start) : l.end})));
-  const onAudio=(file)=>{if(!file)return; if(audioUrl)URL.revokeObjectURL(audioUrl);const url=URL.createObjectURL(file);setAudioUrl(url);setAudioName(file.name);setTime(0);setPlaying(false);};
+  const onAudio=(file)=>{if(!file)return; if(audioUrl)URL.revokeObjectURL(audioUrl);const url=URL.createObjectURL(file);setAudioUrl(url);setAudioName(file.name);setTime(0);setPlaying(false);setDuration(0);setTimelineClips([]);setSelectedTimelineClipId('');setTimelineHistory([]);setTimelineFuture([]);};
   const onBgImage=(file)=>{if(bgImageUrl)URL.revokeObjectURL(bgImageUrl); if(!file){setBgImageUrl('');return;} setBgImageUrl(URL.createObjectURL(file));};
   useEffect(()=>{if(!bgImageUrl){setBgImg(null);return;} let live=true; const img=new Image(); img.onload=()=>{if(live)setBgImg(img);}; img.onerror=()=>{if(live)setBgImg(null);}; img.src=bgImageUrl; return ()=>{live=false;};},[bgImageUrl]);
   useEffect(()=>()=>{if(bgImageUrl)URL.revokeObjectURL(bgImageUrl);},[bgImageUrl]);
   const loadLyrics=()=>{const lyricLines=lyricsText.split(/\r\n|\n|\r/).map((line=>line.trim())).filter(Boolean),count=lyricLines.length;if(!count)return;const step=duration>0?duration/count:4,next=lyricLines.map(((text,i)=>({id:uid(),text:capFirst(text),start:i*step,end:(i+1)*step})));setLines(next),setActiveId(next[0].id),setTab("sync")};
-  const seek=(t)=>{stopAtRef.current=null; const v=Math.max(0,Math.min(duration||Infinity,t));if(audioRef.current)audioRef.current.currentTime=v;setTime(v);};
+  const commitTimelineEdit=(next,previous=timelineClipsRef.current)=>{
+    setTimelineHistory(old=>[...old.slice(-49),previous]);
+    setTimelineFuture([]);
+    setTimelineClips(next);
+    timelineClipsRef.current=next;
+    if(!next.some(clip=>clip.id===selectedTimelineClipId))setSelectedTimelineClipId(next[0]?.id||'');
+  };
+  const undoTimelineEdit=()=>{
+    if(!timelineHistory.length)return;
+    const previous=timelineHistory[timelineHistory.length-1];
+    setTimelineFuture(old=>[...old,timelineClips]);
+    setTimelineHistory(old=>old.slice(0,-1));
+    setTimelineClips(previous);timelineClipsRef.current=previous;
+    setSelectedTimelineClipId(previous[0]?.id||'');
+  };
+  const redoTimelineEdit=()=>{
+    if(!timelineFuture.length)return;
+    const next=timelineFuture[timelineFuture.length-1];
+    setTimelineHistory(old=>[...old,timelineClips]);
+    setTimelineFuture(old=>old.slice(0,-1));
+    setTimelineClips(next);timelineClipsRef.current=next;
+    setSelectedTimelineClipId(next[0]?.id||'');
+  };
+  const seek=(t)=>{
+    stopAtRef.current=null;
+    let v=Math.max(0,Math.min(duration||Infinity,t));
+    const clips=timelineClipsRef.current;
+    if(clips.length&&!clips.some(clip=>v>=clip.start&&v<=clip.end)){
+      const next=clips.find(clip=>clip.start>=v);
+      v=next?next.start:clips[clips.length-1].end;
+    }
+    if(audioRef.current)audioRef.current.currentTime=v;
+    setTime(v);
+  };
+  const splitTimelineAtPlayhead=()=>{
+    const clip=timelineClips.find(item=>item.id===selectedTimelineClipId)||timelineClips.find(item=>time>item.start+.05&&time<item.end-.05);
+    if(!clip){setExportMsg('Select a timeline clip and place the playhead inside it before splitting.');return;}
+    const at=audioRef.current&&audioUrl?audioRef.current.currentTime:time;
+    if(at<=clip.start+.05||at>=clip.end-.05){setExportMsg('Move the playhead away from the clip edges before splitting.');return;}
+    const right={id:uid(),start:at,end:clip.end};
+    const next=timelineClips.flatMap(item=>item.id===clip.id?[{...item,end:at},right]:[item]);
+    commitTimelineEdit(next);setSelectedTimelineClipId(right.id);setExportMsg('Clip split at '+fmt(at)+'.');
+  };
+  const trimSelectedTimelineEdge=(edge)=>{
+    const clip=timelineClips.find(item=>item.id===selectedTimelineClipId);
+    const at=audioRef.current&&audioUrl?audioRef.current.currentTime:time;
+    if(!clip||at<=clip.start+.05||at>=clip.end-.05){setExportMsg('Place the playhead inside the selected clip to trim its '+(edge==='start'?'left':'right')+' edge.');return;}
+    const next=timelineClips.map(item=>item.id!==clip.id?item:edge==='start'?{...item,start:at}:{...item,end:at});
+    commitTimelineEdit(next);setExportMsg('Selected clip trimmed to '+fmt(at)+'.');
+  };
+  const setProjectInAtPlayhead=()=>{
+    const at=audioRef.current&&audioUrl?audioRef.current.currentTime:time;
+    const index=timelineClips.findIndex(clip=>clip.end>at+.001);
+    if(index<0){setExportMsg('The playhead is beyond the remaining timeline.');return;}
+    const next=timelineClips.slice(index).map((clip,i)=>i===0?{...clip,start:Math.max(clip.start,Math.min(at,clip.end-.05))}:clip);
+    commitTimelineEdit(next);seek(next[0].start);setExportMsg('Project IN set to '+fmt(next[0].start)+'.');
+  };
+  const setProjectOutAtPlayhead=()=>{
+    const at=audioRef.current&&audioUrl?audioRef.current.currentTime:time;
+    let index=-1;
+    for(let i=timelineClips.length-1;i>=0;i--){if(timelineClips[i].start<at-.001){index=i;break;}}
+    if(index<0){setExportMsg('The playhead is before the remaining timeline.');return;}
+    const next=timelineClips.slice(0,index+1).map((clip,i)=>i===index?{...clip,end:Math.min(clip.end,Math.max(at,clip.start+.05))}:clip);
+    commitTimelineEdit(next);setExportMsg('Project OUT set to '+fmt(next[next.length-1].end)+'.');
+  };
+  const setProjectInExact=(raw)=>{
+    const value=Number(raw);if(!Number.isFinite(value)||!timelineClips.length)return;
+    const at=Math.max(0,Math.min(duration,value));
+    const index=timelineClips.findIndex(clip=>clip.end>at+.001);
+    if(index<0){setExportMsg('IN must be before the end of the remaining timeline.');return;}
+    const next=timelineClips.slice(index).map((clip,i)=>i===0?{...clip,start:Math.max(clip.start,Math.min(at,clip.end-.05))}:clip);
+    commitTimelineEdit(next);seek(next[0].start);
+  };
+  const setProjectOutExact=(raw)=>{
+    const value=Number(raw);if(!Number.isFinite(value)||!timelineClips.length)return;
+    const at=Math.max(0,Math.min(duration,value));
+    let index=-1;
+    for(let i=timelineClips.length-1;i>=0;i--){if(timelineClips[i].start<at-.001){index=i;break;}}
+    if(index<0){setExportMsg('OUT must be after the beginning of the remaining timeline.');return;}
+    const next=timelineClips.slice(0,index+1).map((clip,i)=>i===index?{...clip,end:Math.min(clip.end,Math.max(at,clip.start+.05))}:clip);
+    commitTimelineEdit(next);
+  };
+  const cropToSelectedTimelineClip=()=>{
+    const clip=timelineClips.find(item=>item.id===selectedTimelineClipId);
+    if(!clip)return;
+    commitTimelineEdit([{...clip}]);setSelectedTimelineClipId(clip.id);seek(clip.start);
+    setExportMsg('Timeline cropped to the selected clip.');
+  };
+  const deleteSelectedTimelineClip=()=>{
+    const index=timelineClips.findIndex(item=>item.id===selectedTimelineClipId);
+    if(index<0)return;
+    if(timelineClips.length===1){setExportMsg('Keep at least one audio clip in the timeline.');return;}
+    const next=timelineClips.filter(item=>item.id!==selectedTimelineClipId);
+    commitTimelineEdit(next);setSelectedTimelineClipId(next[Math.min(index,next.length-1)]?.id||'');
+    setExportMsg('Selected section removed. Playback and export will skip that section.');
+  };
+  const beginTimelineHandleDrag=(edge,clipId,event)=>{
+    event.preventDefault();event.stopPropagation();
+    timelineDragRef.current={edge,clipId,previous:timelineClips};
+    setSelectedTimelineClipId(clipId);
+    const track=timelineTrackRef.current;
+    if(track&&track.setPointerCapture)track.setPointerCapture(event.pointerId);
+  };
+  const moveTimelineHandle=(event)=>{
+    const drag=timelineDragRef.current;if(!drag||!timelineTrackRef.current||!duration)return;
+    const rect=timelineTrackRef.current.getBoundingClientRect();
+    const ratio=Math.max(0,Math.min(1,(event.clientX-rect.left)/Math.max(1,rect.width)));
+    const at=ratio*duration;
+    setTimelineClips(old=>{
+      const index=old.findIndex(clip=>clip.id===drag.clipId);
+      if(index<0)return old;
+      return old.map((clip,i)=>{
+        if(i!==index)return clip;
+        const previous=old[index-1],next=old[index+1];
+        if(drag.edge==='start'){
+          const min=previous?previous.end:0;
+          return {...clip,start:Math.max(min,Math.min(at,clip.end-.08))};
+        }
+        const max=next?next.start:duration;
+        return {...clip,end:Math.min(max,Math.max(at,clip.start+.08))};
+      });
+    });
+  };
+  const finishTimelineHandleDrag=()=>{
+    const drag=timelineDragRef.current;if(!drag)return;
+    timelineDragRef.current=null;
+    setTimelineHistory(old=>[...old.slice(-49),drag.previous]);setTimelineFuture([]);
+  };
+  const clickTimelineTrack=(event)=>{
+    if(timelineDragRef.current||!duration||!timelineTrackRef.current)return;
+    if(event.target.closest&&event.target.closest('.timeline-handle'))return;
+    const rect=timelineTrackRef.current.getBoundingClientRect();
+    const ratio=Math.max(0,Math.min(1,(event.clientX-rect.left)/Math.max(1,rect.width)));
+    const at=ratio*duration;
+    const clip=timelineClips.find(item=>at>=item.start&&at<=item.end);
+    if(clip)setSelectedTimelineClipId(clip.id);
+    seek(at);
+  };
   const markStart=(id)=>{const now=audioRef.current&&audioUrl?audioRef.current.currentTime:time; const index=lines.findIndex(l=>l.id===id);setLines(old=>old.map((l,i)=>i===index?{...l,start:now,end:Math.max(now,old[i+1]?.start ?? (duration||now+3)),timed:true,hidden:true,wordTimes:null}:i===index-1?{...l,end:now}:l));setActiveId(id);};
   const tapWord=(id)=>{const now=audioRef.current&&audioUrl?audioRef.current.currentTime:time; setLines(old=>old.map(l=>{if(l.id!==id)return l; const words=l.text.trim().split(/\s+/).filter(Boolean); if(!words.length)return l; const cur=Array.isArray(l.wordTimes)?l.wordTimes:[]; return {...l,wordTimes:cur.length>=words.length?[now]:[...cur,now]};}));};
   const addLine=()=>{const now=audioRef.current&&audioUrl?audioRef.current.currentTime:time; const l={id:uid(),text:'New lyric line',start:now,end:duration||now+4,timed:true};setLines(old=>[...old,l].sort((a,b)=>a.start-b.start));setActiveId(l.id);};
@@ -632,27 +782,106 @@ function App(){
     if(footerText){ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=canvasFont(footerFont||font,footerSize*k,600);ctx.fillStyle='rgba(0,0,0,.4)';ctx.fillText(footerText,w/2+1,h-72*k+1);ctx.fillStyle=footerColor||'rgba(255,255,255,.85)';ctx.fillText(footerText,w/2,h-72*k);}
     if(watermarkText){ctx.fillStyle='rgba(255,255,255,.42)';ctx.font='18px Arial';ctx.textAlign='left';ctx.fillText(watermarkText,42,h-38);}
   };
-  useEffect(()=>{let raf=0,last=-1; const loop=()=>{const a=audioRef.current; const playingNow=!!(a&&audioUrl&&!a.paused); if(stopAtRef.current!=null&&a&&!a.paused&&a.currentTime>=stopAtRef.current){a.pause();stopAtRef.current=null;} const t=(a&&audioUrl?a.currentTime:time)+syncOffset; const ambientPaused=!playingNow&&bgMotion==='ambient-flow'; if(playingNow||t!==last||ambientPaused){const bgT=playingNow?t:performance.now()/1000;const targets=[canvasRef.current,exportCanvasRef.current,miniCanvasRef.current];targets.forEach(canvas=>{if(canvas){const ctx=canvas.getContext('2d');drawFrame(ctx,canvas.width,canvas.height,t,bgT);}}); last=t;} raf=requestAnimationFrame(loop);}; raf=requestAnimationFrame(loop); return ()=>cancelAnimationFrame(raf);},[time,audioUrl,syncOffset,lines,bg,bgImg,bgPreset,bgMotion,bgDim,highlight,textColor,fontSize,font,fontRevision,position,textAlign,mode,outputLayout,headerText,headerSize,headerFont,headerColor,footerText,footerSize,footerFont,footerColor,watermarkText,orientation,lineAnimationPercent,wordAnimationPercent,lineEntrance,lineExit,wordEffect,animationDuration,tab,caseMode]);
-  const exportVideo=async()=>{const audio=audioRef.current,canvas=exportCanvasRef.current;if(!audioUrl){setExportMsg('Upload an audio file before exporting.');return;}if(!canvas.captureStream||!window.MediaRecorder){setExportMsg('Video recording is not supported in this browser. Try the latest Chrome or Edge.');return;}
-    try{setExporting(true);setExportMsg('Loading selected Google Fonts…');const usedFamilies=Array.from(new Set([font,headerFont||font,footerFont||font,...lines.flatMap(line=>[line.fontFamily,...(line.wordStyles||[]).map(style=>style?.fontFamily)])].filter(Boolean)));const fontReady=await Promise.all(usedFamilies.map(family=>ensureGoogleFontReady(family,Math.max(64,Math.round(fontSize*1.5*dims.w/960)))));if(fontReady.some(ready=>!ready)){setExportMsg('One or more Google Fonts could not load. Check your internet connection and try exporting again; recording was not started.');setExporting(false);return;}await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));seek(0);drawFrame(canvas.getContext('2d'),canvas.width,canvas.height,syncOffset);setExportMsg('Preparing real-time recording…');audio.pause();const stream=canvas.captureStream(30);let audioStream;
+  useEffect(()=>{let raf=0,last=-1; const loop=()=>{const a=audioRef.current; const playingNow=!!(a&&audioUrl&&!a.paused);
+      if(playingNow&&a&&timelineClipsRef.current.length){
+        const clips=timelineClipsRef.current;
+        const index=clips.findIndex(clip=>a.currentTime>=clip.start-.015&&a.currentTime<clip.end-.015);
+        if(index>=0&&a.currentTime>=clips[index].end-.025){
+          const next=clips[index+1];
+          if(next)a.currentTime=next.start;
+          else{a.currentTime=clips[index].end;a.pause();if(recorderRef.current&&recorderRef.current.state!=='inactive')recorderRef.current.stop();setPlaying(false);stopAtRef.current=null;}
+        }else if(index<0){
+          const next=clips.find(clip=>clip.start>=a.currentTime-.02&&clip.end>a.currentTime+.02);
+          if(next)a.currentTime=next.start;
+          else if(a.currentTime>=clips[clips.length-1].end-.025){a.currentTime=clips[clips.length-1].end;a.pause();if(recorderRef.current&&recorderRef.current.state!=='inactive')recorderRef.current.stop();setPlaying(false);stopAtRef.current=null;}
+        }
+      }
+      if(stopAtRef.current!=null&&a&&!a.paused&&a.currentTime>=stopAtRef.current){a.pause();stopAtRef.current=null;} const t=(a&&audioUrl?a.currentTime:time)+syncOffset; const ambientPaused=!playingNow&&bgMotion==='ambient-flow'; if(playingNow||t!==last||ambientPaused){const bgT=playingNow?t:performance.now()/1000;const targets=[canvasRef.current,exportCanvasRef.current,miniCanvasRef.current];targets.forEach(canvas=>{if(canvas){const ctx=canvas.getContext('2d');drawFrame(ctx,canvas.width,canvas.height,t,bgT);}}); last=t;} raf=requestAnimationFrame(loop);}; raf=requestAnimationFrame(loop); return ()=>cancelAnimationFrame(raf);},[time,audioUrl,syncOffset,lines,bg,bgImg,bgPreset,bgMotion,bgDim,highlight,textColor,fontSize,font,fontRevision,position,textAlign,mode,outputLayout,headerText,headerSize,headerFont,headerColor,footerText,footerSize,footerFont,footerColor,watermarkText,orientation,lineAnimationPercent,wordAnimationPercent,lineEntrance,lineExit,wordEffect,animationDuration,tab,caseMode]);
+  const exportVideo=async()=>{
+    const audio=audioRef.current,canvas=exportCanvasRef.current;
+    if(!audioUrl){setExportMsg('Upload an audio file before exporting.');return;}
+    if(!timelineClips.length){setExportMsg('Add at least one audio clip to the timeline before exporting.');return;}
+    if(!canvas.captureStream||!window.MediaRecorder){setExportMsg('Video recording is not supported in this browser. Try the latest Chrome or Edge.');return;}
+    try{
+      setExporting(true);setExportMsg('Loading selected Google Fonts…');
+      const usedFamilies=Array.from(new Set([font,headerFont||font,footerFont||font,...lines.flatMap(line=>[line.fontFamily,...(line.wordStyles||[]).map(style=>style?.fontFamily)])].filter(Boolean)));
+      const fontReady=await Promise.all(usedFamilies.map(family=>ensureGoogleFontReady(family,Math.max(64,Math.round(fontSize*1.5*dims.w/960)))));
+      if(fontReady.some(ready=>!ready)){setExportMsg('One or more Google Fonts could not load. Check your internet connection and try exporting again; recording was not started.');setExporting(false);return;}
+      await document.fonts.ready;
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      audio.pause();audio.onended=null;
+      const exportClips=timelineClipsRef.current;
+      const firstClip=exportClips[0],lastClip=exportClips[exportClips.length-1];
+      audio.currentTime=firstClip.start;setTime(firstClip.start);
+      drawFrame(canvas.getContext('2d'),canvas.width,canvas.height,firstClip.start+syncOffset);
+      setExportMsg('Preparing timeline render…');
+      const stream=canvas.captureStream(30);let audioStream;
       if(audio.captureStream)audioStream=audio.captureStream();else if(audio.mozCaptureStream)audioStream=audio.mozCaptureStream();
-      if(!audioStream){setExportMsg('This browser cannot capture audio for export. Try Chrome or Edge.');setExporting(false);return;}
-      audioStream.getAudioTracks().forEach(track=>stream.addTrack(track));const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(x=>MediaRecorder.isTypeSupported(x))||'';
+      if(!audioStream){setExportMsg('This browser cannot capture audio for export. Try Chrome or Edge.');setExporting(false);stream.getTracks().forEach(track=>track.stop());return;}
+      audioStream.getAudioTracks().forEach(track=>stream.addTrack(track));
+      const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(x=>MediaRecorder.isTypeSupported(x))||'';
       const recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);recorderRef.current=recorder;chunksRef.current=[];
       recorder.ondataavailable=e=>{if(e.data.size)chunksRef.current.push(e.data);};
-      recorder.onstop=()=>{const blob=new Blob(chunksRef.current,{type:recorder.mimeType||'video/webm'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=(audioName.replace(/\.[^.]+$/,'')||'lyric-video')+'.webm';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);stream.getTracks().forEach(t=>t.stop());setExporting(false);setPlaying(false);setExportMsg('Export complete! Your video file was downloaded.');};
-      audio.currentTime=0;recorder.start(250);await audio.play();setPlaying(true);setExportMsg('Recording video and audio in real time… keep this tab open.');
+      recorder.onstop=()=>{
+        const blob=new Blob(chunksRef.current,{type:recorder.mimeType||'video/webm'});
+        const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+        a.download=(audioName.replace(/\.[^.]+$/,'')||'lyric-video')+'.webm';
+        document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+        stream.getTracks().forEach(track=>track.stop());setExporting(false);setPlaying(false);
+        setExportMsg('Export complete! Rendered '+timelineTotalDuration.toFixed(1)+' seconds from the selected timeline.');
+      };
+      recorder.onerror=()=>{setExporting(false);setExportMsg('Recording failed. Try Chrome or Edge and check browser permissions.');};
+      recorder.start(250);
+      await audio.play();setPlaying(true);
+      setExportMsg('Recording '+timelineTotalDuration.toFixed(1)+' seconds of selected timeline… keep this tab open.');
       audio.onended=()=>{if(recorder.state!=='inactive')recorder.stop();setPlaying(false);};
     }catch(e){setExporting(false);setExportMsg('Could not export: '+e.message+'. Try Chrome or Edge and check browser permissions.');}
   };
   const stopExport=()=>{if(recorderRef.current&&recorderRef.current.state!=='inactive')recorderRef.current.stop();if(audioRef.current){audioRef.current.pause();audioRef.current.onended=null;}setPlaying(false);};
-  return <div className="app"><canvas ref={exportCanvasRef} width={dims.w} height={dims.h} style={{position:'fixed',left:'-2000px',top:0,width:dims.w,height:dims.h,pointerEvents:'none'}} aria-hidden="true"/><audio ref={audioRef} src={audioUrl||undefined} style={{display:'none'}} onLoadedMetadata={e=>{setDuration(e.currentTarget.duration||0);}} onTimeUpdate={e=>setTime(e.currentTarget.currentTime)} onPlay={()=>setPlaying(true)} onPause={()=>setPlaying(false)} onEnded={()=>setPlaying(false)} />
+  return <div className="app"><canvas ref={exportCanvasRef} width={dims.w} height={dims.h} style={{position:'fixed',left:'-2000px',top:0,width:dims.w,height:dims.h,pointerEvents:'none'}} aria-hidden="true"/><audio ref={audioRef} src={audioUrl||undefined} style={{display:'none'}} onLoadedMetadata={e=>{const d=e.currentTarget.duration||0;setDuration(d);const first={id:uid(),start:0,end:d};setTimelineClips([first]);timelineClipsRef.current=[first];setSelectedTimelineClipId(first.id);setTimelineHistory([]);setTimelineFuture([]);}} onTimeUpdate={e=>setTime(e.currentTarget.currentTime)} onPlay={()=>setPlaying(true)} onPause={()=>setPlaying(false)} onEnded={()=>setPlaying(false)} />
     <header className="topbar"><div className="brand"><div className="logo"><Music2 size={24}/></div><div><h1>Lyric Studio</h1><p>Turn your music into a lyric video</p></div></div><div className="top-actions"><button className="btn ghost" onClick={reset}><RotateCcw size={16}/> Reset project</button><button className="btn primary" onClick={exportVideo} disabled={exporting}><Download size={16}/>{exporting?'Recording…':'Export video'}</button>{exporting&&<button className="btn danger" onClick={stopExport}>Stop export</button>}</div></header>
     <main className="layout"><aside className="sidebar"><div className="side-label">YOUR PROJECT</div>{[['upload','1','Upload files'],['sync','2','Sync lyrics'],['preview','3','Preview'],['export','4','Export video']].map(([key,n,label])=><button key={key} className={'step '+(tab===key?'selected':'')} onClick={()=>setTab(key)}><span className="step-num">{n}</span><span>{label}<small>{({upload:'Add audio and lyrics',sync:'Mark line timings',preview:'Style your video',export:'Create your file'})[key]}</small></span>{tab===key&&<span className="step-dot"/>}</button>)}<div className="sidebar-note"><CircleHelp size={17}/><div><b>Quick tip</b><p>Play the song and click “Mark current time” when each lyric line begins.</p></div></div></aside>
     <section className="workspace">
       <div className="page-heading"><div><div className="eyebrow">KARAOKE VIDEO MAKER</div><h2>{tab==='upload'?'Start with your song':tab==='preview'?'Make it yours':tab==='export'?'Ready to export?':'Sync your lyrics'}</h2><p>Everything runs locally in your browser. No AI or external API required.</p></div><div className="local-pill"><span/> Local processing</div></div>
       {tab==='upload'&&<div className="panel upload-panel"><div className="panel-title"><FileAudio size={18}/> <h3>1. Upload your audio</h3></div><label className="dropzone"><input type="file" accept="audio/*" onChange={e=>onAudio(e.target.files?.[0])}/><div className="upload-icon"><Upload size={24}/></div><b>{audioUrl?audioName:'Choose an MP3 or audio file'}</b><span>{audioUrl?'Audio loaded — choose another file to replace it':'Click to browse your device. Audio stays in your browser.'}</span></label><div className="panel-title lyrics-title"><AlignLeft size={18}/><h3>2. Paste your lyrics</h3></div><textarea className="lyrics-input" value={lyricsText} onChange={e=>setLyricsText(e.target.value)} placeholder={'One lyric line per row…\nI walk alone\nThrough the night'} rows={8}/><div className="form-footer"><span>{lyricsText.split(/\r\n|\n|\r/).filter(x=>x.trim()).length} lyric lines</span><button className="btn primary" onClick={loadLyrics}><Check size={16}/> Create lyric lines</button></div><div className="hint">Line timings are initialized evenly as a starting point. You can sync each line to the music in the editor.</div></div>}
       {tab==='sync'&&<><div className="panel audio-panel"><div className="panel-head"><div className="panel-title"><AudioLines size={18}/><h3>Audio player</h3></div><div className="file-meta">{audioName}<span>{fmt(duration)}</span></div></div><div className="player-controls"><button className="play-btn" onClick={()=>{if(!audioRef.current)return;if(audioRef.current.paused)audioRef.current.play();else audioRef.current.pause();}}>{playing?<Pause size={21} fill="currentColor"/>:<Play size={21} fill="currentColor"/>}</button><div className="seek-area"><input aria-label="Seek audio" type="range" min="0" max={duration||100} step=".05" value={Math.min(time,duration||100)} onChange={e=>seek(Number(e.target.value))}/><div className="time-labels"><span>{fmt(time)}</span><span>{fmt(duration)}</span></div></div></div><div className="sync-offset"><label>Highlight offset<input type="number" aria-label="Highlight offset in seconds" min={-1} max={1} step={0.05} value={syncOffset} onChange={e=>{if(e.target.value!==''&&Number.isFinite(Number(e.target.value)))setSyncOffset(Number(e.target.value));}} onBlur={e=>{const n=Number(e.target.value);if(e.target.value!==''&&Number.isFinite(n))setSyncOffset(Math.max(-1,Math.min(1,n)));}} /></label><span>{Math.round(syncOffset*1000)} ms</span></div><div className="waveform" onClick={e=>{const r=e.currentTarget.getBoundingClientRect();seek(((e.clientX-r.left)/r.width)*(duration||0));}}>{Array.from({length:120},(_,i)=><span key={i} style={{height:`${12+((Math.sin(i*2.17)+1)*.5)*40+((Math.cos(i*.53)+1)*.5)*18}px`,opacity:i/120<time/(duration||1)?1:.42}}/>)}<div className="wave-cursor" style={{left:`${duration?time/duration*100:0}%`}}/></div><div className="wave-foot"><span>Click waveform to seek</span><span>{audioUrl?'Audio ready':'Upload an audio file in Upload files'}</span></div></div>
+      <div className="panel timeline-panel">
+        <div className="timeline-panel-head">
+          <div className="panel-title"><Scissors size={18}/><h3>Timeline editor</h3><span className="count">{timelineClips.length} clips</span></div>
+          <div className="timeline-zoom"><span>Zoom</span><input aria-label="Timeline zoom" type="range" min="1" max="5" step=".25" value={timelineZoom} onChange={e=>setTimelineZoom(Number(e.target.value))}/><button type="button" className="line-style-reset" onClick={()=>setTimelineZoom(1)}>Fit</button><button type="button" className="line-style-reset" onClick={()=>{if(duration){const full=[{id:uid(),start:0,end:duration}];commitTimelineEdit(full);setSelectedTimelineClipId(full[0].id);seek(0);}}} disabled={!duration}>Restore full song</button></div>
+        </div>
+        <div className="timeline-toolbar">
+          <button type="button" className="btn small ghost" onClick={splitTimelineAtPlayhead} disabled={!selectedTimelineClip}><Scissors size={14}/> Split at playhead</button>
+          <button type="button" className="btn small ghost" onClick={()=>trimSelectedTimelineEdge('start')} disabled={!selectedTimelineClip}>Trim left</button>
+          <button type="button" className="btn small ghost" onClick={()=>trimSelectedTimelineEdge('end')} disabled={!selectedTimelineClip}>Trim right</button>
+          <button type="button" className="btn small ghost" onClick={cropToSelectedTimelineClip} disabled={!selectedTimelineClip}>Crop to clip</button>
+          <button type="button" className="btn small ghost" onClick={deleteSelectedTimelineClip} disabled={!selectedTimelineClip||timelineClips.length<=1}><Trash2 size={14}/> Remove section</button>
+          <button type="button" className="btn small ghost" onClick={undoTimelineEdit} disabled={!timelineHistory.length}><RotateCcw size={14}/> Undo</button>
+          <button type="button" className="btn small ghost" onClick={redoTimelineEdit} disabled={!timelineFuture.length}>Redo</button>
+        </div>
+        <div className="timeline-viewport">
+          <div className="timeline-track" ref={timelineTrackRef} style={{width:(timelineZoom*100)+'%'}} onClick={clickTimelineTrack} onPointerMove={moveTimelineHandle} onPointerUp={finishTimelineHandleDrag} onPointerCancel={finishTimelineHandleDrag}>
+            <div className="timeline-ruler">{timelineTicks.map((tick,index)=><span key={index} style={{left:tick.left+'%'}}>{fmt(tick.time)}<i/></span>)}</div>
+            <div className="timeline-audio-lane">
+              <div className="timeline-wave-bars">{Array.from({length:180},(_,i)=><span key={i} style={{left:(i/180*100)+'%',height:(12+((Math.sin(i*1.75)+1)*.5)*29+((Math.cos(i*.41)+1)*.5)*23)+'%'}}/>)}</div>
+              {timelineClips.map(clip=><div key={clip.id} className={'timeline-clip'+(selectedTimelineClipId===clip.id?' selected':'')} style={{left:(duration?clip.start/duration*100:0)+'%',width:(duration?(clip.end-clip.start)/duration*100:0)+'%'}}>
+                <span className="timeline-clip-label">AUDIO · {fmt(clip.start)} — {fmt(clip.end)}</span>
+                <button type="button" className="timeline-handle left" aria-label="Trim clip start" title="Drag to trim clip start" onClick={e=>e.stopPropagation()} onPointerDown={e=>beginTimelineHandleDrag('start',clip.id,e)}/>
+                <button type="button" className="timeline-handle right" aria-label="Trim clip end" title="Drag to trim clip end" onClick={e=>e.stopPropagation()} onPointerDown={e=>beginTimelineHandleDrag('end',clip.id,e)}/>
+              </div>)}
+              <div className="timeline-playhead" style={{left:(duration?time/duration*100:0)+'%'}}><span/></div>
+            </div>
+          </div>
+        </div>
+        <div className="timeline-range-controls">
+          <label>Project IN <input key={'timeline-in-'+projectIn} type="number" min="0" max={duration||0} step=".1" defaultValue={projectIn.toFixed(1)} onBlur={e=>setProjectInExact(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();}}/></label>
+          <button type="button" className="line-style-reset" onClick={setProjectInAtPlayhead} disabled={!timelineClips.length}>Set IN here</button>
+          <label>Project OUT <input key={'timeline-out-'+projectOut} type="number" min="0" max={duration||0} step=".1" defaultValue={projectOut.toFixed(1)} onBlur={e=>setProjectOutExact(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();}}/></label>
+          <button type="button" className="line-style-reset" onClick={setProjectOutAtPlayhead} disabled={!timelineClips.length}>Set OUT here</button>
+          <div className="timeline-duration"><small>Final duration</small><b>{fmt(timelineTotalDuration)}</b></div>
+        </div>
+        <div className="timeline-footnote"><span>Drag the clip edges to trim. Split at the playhead to create separate editable sections. Removing a section makes playback and export jump over it.</span><span>{timelineClips.length?('Source: '+fmt(duration)):'Upload audio to start editing'}</span></div>
+      </div>
       <div className="panel lyrics-panel"><div className="panel-head"><div className="panel-title"><AlignLeft size={18}/><h3>Lyrics & timing</h3><span className="count">{lines.length} lines</span></div><div className="panel-actions"><label className="base-size" title="Base size for all lines — per-line sizes override it">All lines<input type="number" aria-label="Base text size for all lines" min="18" max="96" value={fontSize} onChange={e=>{if(e.target.value!==''&&Number.isFinite(Number(e.target.value)))setFontSize(Number(e.target.value));}} onBlur={e=>{const n=Number(e.target.value);if(e.target.value!==''&&Number.isFinite(n))setFontSize(Math.max(18,Math.min(96,n)));}} /></label><div className="segmented"><button className={mode==='line'?'active':''} onClick={()=>setMode('line')}>Line mode</button><button className={mode==='word'?'active':''} onClick={()=>setMode('word')}>Word mode</button><button className={mode==='static'?'active':''} onClick={()=>setMode('static')}>Static</button></div><button className="btn small ghost" onClick={()=>setFocusOnly(v=>!v)} title="Temporarily show only the selected/current lyric line">{focusOnly?'Show all lines':'Focus current line'}</button><button className="btn small ghost" onClick={addLine}><Plus size={15}/> Add line</button></div></div><div className="sync-instructions"><Clock3 size={15}/><span>Select a line, play the song, then click <b>Mark current time</b> when that line starts.</span></div><div className="line-list">{visibleLines.map(line=>{const i=lines.findIndex(item=>item.id===line.id);const wcount=line.text.trim().split(/\s+/).filter(Boolean).length,wdone=Array.isArray(line.wordTimes)?Math.min(line.wordTimes.length,wcount):0;return <div className={'lyric-row '+(activeId===line.id?'active':'')+(dropId===line.id?' drop-target':'')} key={line.id} onFocusCapture={()=>setActiveId(line.id)} onDragOver={e=>{e.preventDefault(); e.dataTransfer.dropEffect='move'; if(line.id!==dropId)setDropId(line.id);}} onDrop={e=>{e.preventDefault(); const r=e.currentTarget.getBoundingClientRect(); dropLine(line.id,(e.clientY-r.top)>r.height/2);}}><div className="lyric-row-main"><span className="drag-handle" draggable title="Drag to reorder" onDragStart={e=>{dragIdRef.current=line.id; e.dataTransfer.effectAllowed='move'; try{e.dataTransfer.setData('text/plain',line.id);}catch(_){} const row=e.currentTarget.closest('.lyric-row'); if(row)row.classList.add('dragging');}} onDragEnd={e=>{dragIdRef.current=null; setDropId(null); const row=e.currentTarget.closest('.lyric-row'); if(row)row.classList.remove('dragging');}}><GripVertical size={15}/></span><button className="row-play" title="Play this line from its start to its end" onClick={()=>playLine(line)}><Play size={14}/></button><span className={'sync-dot'+(line.timed?' on':'')} title={line.timed?'Timing set':'Not timed yet — press Mark current time while playing'}/><input className="line-text" aria-label="Lyric text" value={dcase(line.text)} onChange={e=>setLines(old=>old.map(l=>l.id===line.id?{...l,text:capFirst(e.target.value),wordTimes:null,wordStyles:[]}:l))}/><div className="time-field"><label>Start</label><input aria-label="Line start time" title="Start time as mm:ss.tenths, e.g. 00:19.3" inputMode="decimal" placeholder="00:00.0" defaultValue={fmt(line.start)} key={`${line.id}-${Number(line.start.toFixed(1))}`} onBlur={e=>{const n=parseTime(e.target.value); if(!Number.isFinite(n)||n<0){e.target.value=fmt(line.start);return;} const v=Math.round(n*10)/10; setLines(old=>old.map(l=>l.id===line.id?{...l,start:v,timed:true,wordTimes:null}:l).sort((a,b)=>a.start-b.start));}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();}}/></div><button className="mark-btn" onClick={()=>markStart(line.id)} title="Set this line's start to current playback time"><Clock3 size={14}/> Mark current time</button><button className="icon-btn" onClick={()=>removeLine(line.id)} title="Remove line"><Trash2 size={16}/></button><button className="icon-btn" onClick={()=>updateLine(line.id,{hidden:true})} title="Hide this line — mark as done"><Eye size={16}/></button></div><div className="line-style-controls"><label>Text size <input type="number" min="14" max="96" value={line.fontSize ?? fontSize} onChange={e=>{if(e.target.value!==''&&Number.isFinite(Number(e.target.value)))updateLine(line.id,{fontSize:Number(e.target.value)});}} onBlur={e=>{const n=Number(e.target.value);if(e.target.value!==''&&Number.isFinite(n))updateLine(line.id,{fontSize:Math.max(14,Math.min(96,n))});}} /></label><label>Line color <input aria-label={`Text color for line ${i+1}`} type="color" value={line.textColor || textColor} onChange={e=>updateLine(line.id,{textColor:e.target.value})}/></label><label className="line-font-select">Line font<select aria-label={`Font for lyric line ${i+1}`} value={line.fontFamily||''} onChange={e=>updateLine(line.id,{fontFamily:e.target.value||null})}><option value="">Global font</option>{FONT_LIBRARY.map(item=><option key={item.family} value={item.family}>{item.family}</option>)}</select></label><button type="button" className="line-style-reset" onClick={()=>updateLine(line.id,{fontSize:null,textColor:null,fontFamily:null,wordTimes:null,wordStyles:[],enterAnimation:null,exitAnimation:null})}>Use default style</button><label className="line-animation-select">Entrance<select aria-label={`Entrance animation for line ${i+1}`} value={line.enterAnimation??'default'} onChange={e=>updateLine(line.id,{enterAnimation:e.target.value==='default'?null:e.target.value})}><option value="default">Global default</option><option value="none">None</option><option value="fade">Fade</option><option value="slide-up">Slide up</option><option value="slide-left">Slide left</option><option value="pop">Pop</option><option value="typewriter">Typewriter</option></select></label><label className="line-animation-select">Exit<select aria-label={`Exit animation for line ${i+1}`} value={line.exitAnimation??'default'} onChange={e=>updateLine(line.id,{exitAnimation:e.target.value==='default'?null:e.target.value})}><option value="default">Global default</option><option value="none">None</option><option value="fade">Fade</option><option value="slide-down">Slide down</option><option value="slide-right">Slide right</option><option value="shrink">Shrink</option></select></label>{mode==='word'&&<button type="button" className="line-style-reset" title="Tap along while playing to stamp each word's start time" onClick={()=>tapWord(line.id)}>{wdone>=wcount&&wcount>0?'Retap words':wdone>0?`Tap word ${wdone+1}/${wcount}`:'Tap words'}</button>}</div><details className="word-style-editor"><summary>Style individual words</summary><div className="word-style-grid">{line.text.trim().split(/\s+/).filter(Boolean).map((word,wordIndex)=>{const wordStyle=line.wordStyles?.[wordIndex]||{};return <div className="word-style-item" key={`${line.id}-${wordIndex}`}><strong>{word}</strong><label>Font<select aria-label={`Font for word ${word}`} value={wordStyle.fontFamily||''} onChange={e=>{const next=[...(line.wordStyles||[])];next[wordIndex]={...(next[wordIndex]||{}),fontFamily:e.target.value||undefined};updateLine(line.id,{wordStyles:next});}}><option value="">Line font</option>{FONT_LIBRARY.map(item=><option key={item.family} value={item.family}>{item.family}</option>)}</select></label><label>Color<input type="color" aria-label={`Color for word ${word}`} value={wordStyle.color||line.textColor||textColor} onChange={e=>{const next=[...(line.wordStyles||[])];next[wordIndex]={...(next[wordIndex]||{}),color:e.target.value};updateLine(line.id,{wordStyles:next});}}/></label><label>Size <span>{wordStyle.scale??100}%</span><input type="range" min="80" max="150" step="5" aria-label={`Size for word ${word}`} value={wordStyle.scale??100} onChange={e=>{const next=[...(line.wordStyles||[])];next[wordIndex]={...(next[wordIndex]||{}),scale:Number(e.target.value)};updateLine(line.id,{wordStyles:next});}}/></label><button type="button" className="line-style-reset" onClick={()=>{const next=[...(line.wordStyles||[])];next[wordIndex]={};updateLine(line.id,{wordStyles:next});}}>Reset</button></div>;})}</div><small>Custom word fonts, colors and sizes override the line style. In Word mode, uncustomized words still use karaoke highlighting.</small></details></div>;})}</div>{lines.length===0&&<div className="empty">No lyric lines yet. Add a line or paste lyrics in Upload files.</div>}{focusOnly&&<div className="focus-note">Focus view is on — the other lines are hidden temporarily. <button type="button" onClick={()=>setFocusOnly(false)}>Show all lines</button></div>}{hiddenCount>0&&<div className="focus-note">{hiddenCount} finished {hiddenCount===1?'line':'lines'} hidden. <button type="button" onClick={()=>setLines(old=>old.map(l=>({...l,hidden:false})))}>Show hidden lines</button></div>}{hiddenCount===lines.length&&lines.length>0&&<div className="empty">All lines are hidden. Use “Show hidden lines” above to review them.</div>}{trash.length>0&&<div className="recycle-bin"><div className="recycle-head"><span>Recycle bin ({trash.length})</span><button type="button" className="line-style-reset" onClick={()=>setTrash([])}>Empty bin</button></div>{trash.map(t=><div className="recycle-row" key={t.line.id}><span>{t.line.text||'(empty line)'} · {fmt(t.line.start)}</span><button type="button" className="line-style-reset" onClick={()=>restoreLine(t.line.id)}>Restore</button></div>)}</div>}<div className="list-footer"><button className="btn ghost" onClick={()=>setTab('upload')}><Plus size={15}/> Edit lyrics</button><span>Line end = next line start automatically</span></div></div></>}
       {tab==='preview'&&<div className="panel preview-panel"><div className="panel-title"><ImageIcon size={18}/><h3>Video style & live preview</h3></div><div className="big-preview"><canvas ref={canvasRef} width={dims.w} height={dims.h} style={dims.h>dims.w?{height:'60vh',width:'auto',margin:'0 auto'}:undefined}/><div className="preview-time">{fmt(time)} / {fmt(duration)}</div></div><div className="background-studio">
   <div className="background-studio-heading"><div><b>Background library</b><small>Choose a mood to match the message of the song.</small></div><span className="background-live-tag">LIVE CANVAS</span></div>
@@ -674,7 +903,7 @@ function App(){
   {bgImageUrl&&<p className="background-upload-status"><Check size={13}/> Custom photo selected — it will be included in the preview and video export.</p>}
 </div>
 <div className="style-grid"><label>Highlight color<div className="color-input"><input type="color" value={highlight} onChange={e=>setHighlight(e.target.value)}/><code>{highlight}</code></div></label><label>Text color<div className="color-input"><input type="color" value={textColor} onChange={e=>setTextColor(e.target.value)}/><code>{textColor}</code></div></label><label>Base text size <div className="font-size-controls"><input aria-label="Base text size slider" type="range" min="18" max="96" value={fontSize} onChange={e=>setFontSize(Number(e.target.value))}/><input aria-label="Exact base text size in pixels" type="number" min="18" max="96" value={fontSize} onChange={e=>{if(e.target.value!==''&&Number.isFinite(Number(e.target.value)))setFontSize(Number(e.target.value));}} onBlur={e=>{const n=Number(e.target.value);if(e.target.value!==''&&Number.isFinite(n))setFontSize(Math.max(18,Math.min(96,n)));}}/><span>px</span></div></label><div className="font-library-control"><div className="font-library-heading"><span>Premium font library</span><small>Google Fonts · {FONT_LIBRARY.length} families</small></div><input className="font-search" type="search" aria-label="Search font library" value={fontSearch} onChange={e=>setFontSearch(e.target.value)} placeholder="Search fonts… e.g. Montserrat"/><div className="font-category-row">{FONT_CATEGORIES.map(category=><button type="button" key={category} className={fontCategory===category?'active':''} onClick={()=>setFontCategory(category)}>{category}</button>)}</div><div className="font-card-grid">{filteredFonts.map(item=><button type="button" key={item.family} className={'font-card'+(font===item.family?' selected':'')} onClick={()=>setFont(item.family)} aria-pressed={font===item.family}><span className="font-card-top"><b>{item.family}</b>{font===item.family&&<Check size={13}/>}</span><span className="font-card-sample" style={{fontFamily:'"'+item.family+'", sans-serif'}}>Sing it loud</span><small>{item.description}</small></button>)}</div>{filteredFonts.length===0&&<div className="font-empty">No fonts match that search.</div>}<small className="font-library-note">Choose a base font here. Override a line or any individual word in the lyrics editor. Google Fonts need an internet connection.</small></div><label>Text position<select value={position} onChange={e=>setPosition(e.target.value)}><option value="top">Top</option><option value="center">Center</option><option value="bottom">Bottom</option></select></label><label>Text alignment<select aria-label="Text alignment" value={textAlign} onChange={e=>setTextAlign(e.target.value)}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label><label>Orientation<select aria-label="Video orientation" value={orientation} onChange={e=>setOrientation(e.target.value)}><option value="landscape">Landscape 16:9</option><option value="portrait">Portrait 9:16</option><option value="square">Square 1:1</option></select></label><div className="style-group"><span className="group-title">Header overlay</span><input className="text-input" aria-label="Header text" value={headerText} onChange={e=>setHeaderText(e.target.value)} placeholder="Optional — shown at top" maxLength={80}/><div className="style-row"><label>Size<input type="number" aria-label="Header text size" min={10} max={96} value={headerSize} onChange={e=>{if(e.target.value!==''&&Number.isFinite(Number(e.target.value)))setHeaderSize(Number(e.target.value));}} onBlur={e=>{const n=Number(e.target.value);if(e.target.value!==''&&Number.isFinite(n))setHeaderSize(Math.max(10,Math.min(96,n)));}} /></label><label>Font<select aria-label="Header font" value={headerFont} onChange={e=>setHeaderFont(e.target.value)}><option value="">Video font</option>{FONT_LIBRARY.map(item=><option key={item.family} value={item.family}>{item.family}</option>)}</select></label><label>Color<div className="color-input"><input type="color" aria-label="Header color" value={headerColor||textColor} onChange={e=>setHeaderColor(e.target.value)}/><code>{headerColor||textColor}</code></div></label></div></div><div className="style-group"><span className="group-title">Footer overlay</span><input className="text-input" aria-label="Footer text" value={footerText} onChange={e=>setFooterText(e.target.value)} placeholder="Optional — shown at bottom" maxLength={80}/><div className="style-row"><label>Size<input type="number" aria-label="Footer text size" min={10} max={96} value={footerSize} onChange={e=>{if(e.target.value!==''&&Number.isFinite(Number(e.target.value)))setFooterSize(Number(e.target.value));}} onBlur={e=>{const n=Number(e.target.value);if(e.target.value!==''&&Number.isFinite(n))setFooterSize(Math.max(10,Math.min(96,n)));}} /></label><label>Font<select aria-label="Footer font" value={footerFont} onChange={e=>setFooterFont(e.target.value)}><option value="">Video font</option>{FONT_LIBRARY.map(item=><option key={item.family} value={item.family}>{item.family}</option>)}</select></label><label>Color<div className="color-input"><input type="color" aria-label="Footer color" value={footerColor||'#ffffff'} onChange={e=>setFooterColor(e.target.value)}/><code>{footerColor||'#ffffff'}</code></div></label></div></div><label>Watermark text<input className="text-input" value={watermarkText} onChange={e=>setWatermarkText(e.target.value)} placeholder="LYRIC STUDIO — empty hides it" maxLength={40}/></label></div><div className="form-footer"><button className="btn ghost" onClick={()=>setTab('sync')}><Clock3 size={16}/> Adjust timing</button><button className="btn primary" onClick={()=>setTab('export')}><Film size={16}/> Continue to export</button></div></div>}
-      {tab==='export'&&<div className="panel export-panel"><div className="export-icon"><Film size={32}/></div><h3>Render your lyric video</h3><p>Record the live canvas preview together with your uploaded audio. This runs locally in your browser — no server or API key.</p><div className="export-summary"><div><span>Audio</span><b>{audioUrl?audioName:'Not uploaded'}</b></div><div><span>Lyrics</span><b>{lines.length} lines</b></div><div><span>Duration</span><b>{fmt(duration)}</b></div><div><span>Output</span><b>WebM · {dims.w}×{dims.h} · 30 FPS</b></div></div><div className="notice"><WandSparkles size={17}/><span>Export records in real time, so a 3-minute song takes about 3 minutes to export. Keep this tab open until it finishes. Browser support varies.</span></div>{exportMsg&&<div className="status-msg">{exportMsg}</div>}<div className="form-footer"><button className="btn ghost" onClick={()=>setTab('preview')}>Back to style</button><button className="btn primary" disabled={exporting||!audioUrl} onClick={exportVideo}><Download size={16}/>{exporting?'Recording…':'Start export'}</button></div></div>}
+      {tab==='export'&&<div className="panel export-panel"><div className="export-icon"><Film size={32}/></div><h3>Render your lyric video</h3><p>Record the live canvas preview together with your uploaded audio. This runs locally in your browser — no server or API key.</p><div className="export-summary"><div><span>Audio</span><b>{audioUrl?audioName:'Not uploaded'}</b></div><div><span>Lyrics</span><b>{lines.length} lines</b></div><div><span>Final duration</span><b>{fmt(timelineTotalDuration)}</b></div><div><span>Output</span><b>WebM · {dims.w}×{dims.h} · 30 FPS</b></div></div><div className="notice"><WandSparkles size={17}/><span>Export records in real time, so a 3-minute song takes about 3 minutes to export. Keep this tab open until it finishes. Browser support varies.</span></div>{exportMsg&&<div className="status-msg">{exportMsg}</div>}<div className="form-footer"><button className="btn ghost" onClick={()=>setTab('preview')}>Back to style</button><button className="btn primary" disabled={exporting||!audioUrl} onClick={exportVideo}><Download size={16}/>{exporting?'Recording…':'Start export'}</button></div></div>}
     </section>
     <aside className="rightbar"><div className="panel preview-card"><div className="panel-title"><Film size={17}/><h3>Video preview</h3></div><div className="mini-preview" style={{aspectRatio:`${miniDims.w} / ${miniDims.h}`}}><canvas ref={miniCanvasRef} width={miniDims.w} height={miniDims.h}/><div className="mini-overlay" style={{display:'none'}}/></div><div className="mini-controls"><button className="icon-btn" onClick={()=>{if(audioRef.current?.paused)audioRef.current.play();else audioRef.current?.pause();}}>{playing?<Pause size={17}/>:<Play size={17}/>}</button><div className="mini-progress"><div style={{width:`${duration?time/duration*100:0}%`}}/></div><span>{fmt(time)}</span></div></div><div className="panel quick-settings"><div className="panel-title"><Type size={17}/><h3>Quick settings</h3></div><label>Output layout<select aria-label="Output layout" value={outputLayout} onChange={e=>setOutputLayout(e.target.value)}><option value="single-line">Single current line</option><option value="full-lyrics">Full lyrics · highlight current line</option></select></label><small className="output-layout-hint">Full lyrics scroll with playback and keep the selected highlight style on the active line.</small><label>Highlight style<select value={mode} onChange={e=>setMode(e.target.value)}><option value="line">Line by line</option><option value="word">Word by word</option><option value="static">Static text</option></select></label><div className="animation-timing-controls"><div className="animation-timing-control"><label htmlFor="line-animation-percent">Line highlight timing <b>{lineAnimationPercent}%</b></label><input id="line-animation-percent" aria-label="Line highlight timing percentage" type="range" min="25" max="100" step="5" value={lineAnimationPercent} onChange={e=>setLineAnimationPercent(Number(e.target.value))}/><small>Complete the line highlight over this portion of its duration.</small></div><div className="animation-timing-control"><label htmlFor="word-animation-percent">Word highlight timing <b>{wordAnimationPercent}%</b></label><input id="word-animation-percent" aria-label="Word highlight timing percentage" type="range" min="25" max="100" step="5" value={wordAnimationPercent} onChange={e=>setWordAnimationPercent(Number(e.target.value))}/><small>Complete the word sequence over this portion of its duration.</small></div>{mode==='static'&&<p className="animation-static-note">Static text has no progressive reveal; the full-lyrics layout still marks the active line for context.</p>}</div><div className="animation-engine-controls"><div className="animation-engine-heading"><WandSparkles size={15}/><b>Text animation</b></div><label>Default entrance<select value={lineEntrance} onChange={e=>setLineEntrance(e.target.value)}><option value="none">None</option><option value="fade">Fade in</option><option value="slide-up">Slide up</option><option value="slide-left">Slide from left</option><option value="pop">Pop & bounce</option><option value="typewriter">Typewriter reveal</option></select></label><label>Default exit<select value={lineExit} onChange={e=>setLineExit(e.target.value)}><option value="none">None</option><option value="fade">Fade out</option><option value="slide-down">Slide down</option><option value="slide-right">Slide away right</option><option value="shrink">Shrink away</option></select></label><label>Active word effect<select value={wordEffect} onChange={e=>setWordEffect(e.target.value)}><option value="none">None</option><option value="bounce">Bounce</option><option value="glow">Glow</option><option value="pulse">Pulse</option></select></label><div className="animation-timing-control"><label htmlFor="animation-duration">Transition duration <b>{animationDuration.toFixed(2)} s</b></label><input id="animation-duration" type="range" min="0.1" max="1" step="0.05" value={animationDuration} onChange={e=>setAnimationDuration(Number(e.target.value))}/><small>Line transitions are calculated from playback time, so seeking and export stay synchronized.</small></div><small className="animation-static-note">Per-line entrance and exit overrides are available in the lyric editor. Static mode intentionally ignores these animations.</small></div><label>Text position<select value={position} onChange={e=>setPosition(e.target.value)}><option value="top">Top</option><option value="center">Center</option><option value="bottom">Bottom</option></select></label><label>Text alignment<select aria-label="Text alignment" value={textAlign} onChange={e=>setTextAlign(e.target.value)}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label><label>Text case<select aria-label="Text case" value={caseMode} onChange={e=>setCaseMode(e.target.value)}><option value="original">Original</option><option value="lower">lowercase</option><option value="upper">UPPERCASE</option></select></label><button className="btn ghost full" onClick={()=>setTab('preview')}><WandSparkles size={15}/> Customize appearance</button></div><div className="panel tips"><div className="panel-title"><CircleHelp size={17}/><h3>How it works</h3></div><ul><li>Upload your MP3 and paste lyrics.</li><li>One lyric line per row works best.</li><li>Play audio and mark each line's start.</li><li>Preview styling, then export a video.</li></ul><div className="tip-foot"><Check size={14}/> Your files stay in this browser</div></div></aside>
     </main><footer>LYRIC STUDIO <span>•</span> Manual sync editor <span>•</span> No external APIs</footer>
