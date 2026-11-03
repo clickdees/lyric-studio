@@ -993,3 +993,47 @@
   .timeline-duration { flex:1 1 100%; margin:5px 0 0; text-align:left; }
   .timeline-footnote { flex-direction:column; }
 }
+
+
+/* AI timing correction review panel */
+.timing-correction-panel { margin:0 0 16px; padding:16px; overflow:hidden; }
+.timing-correction-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.timing-correction-heading .panel-title { margin:0; }
+.timing-local-tag { display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border:1px solid #294e57; border-radius:20px; color:#86d9c4; background:#102729; font-size:8px; letter-spacing:.8px; font-weight:750; white-space:nowrap; }
+.timing-local-tag > span { width:6px; height:6px; border-radius:50%; background:#65d6ad; box-shadow:0 0 7px #65d6ad88; }
+.timing-correction-intro { margin:9px 0 13px; color:#96a6c0; font-size:11px; line-height:1.55; }
+.timing-analysis-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin:0 0 12px; }
+.timing-analysis-summary > div { min-width:0; padding:9px 10px; border:1px solid #263751; border-radius:8px; background:#0d1829; }
+.timing-analysis-summary small { display:block; margin-bottom:4px; color:#7f91ad; font-size:9px; }
+.timing-analysis-summary b { display:block; overflow:hidden; color:#dbe5f7; font-size:11px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; }
+.timing-action-row { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin-top:10px; }
+.timing-action-row .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+.timing-progress { margin-top:12px; }
+.timing-progress > div { height:7px; overflow:hidden; border-radius:8px; background:#0a1424; }
+.timing-progress > div > span { display:block; height:100%; border-radius:8px; background:linear-gradient(90deg,#4777ff,#65d6bd); transition:width .15s; }
+.timing-progress small { display:block; margin-top:6px; color:#8fa2bf; font-size:10px; }
+.timing-analysis-note,.timing-message { display:flex; align-items:flex-start; gap:7px; margin-top:10px; color:#91d8bd; font-size:10px; line-height:1.5; }
+.timing-analysis-note svg,.timing-message svg { flex:0 0 auto; }
+.timing-response { margin-top:16px; padding-top:14px; border-top:1px solid #24334a; }
+.timing-response-heading { display:flex; align-items:baseline; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.timing-response-heading b,.timing-review-heading b { color:#e3ebfb; font-size:11px; }
+.timing-response-heading small { color:#8092ae; font-size:9px; }
+.timing-import-row { display:flex; justify-content:flex-start; margin:9px 0 7px; }
+.timing-response textarea { display:block; width:100%; box-sizing:border-box; min-width:0; resize:vertical; padding:10px 11px; border:1px solid #293a55; border-radius:8px; outline:none; color:#dce6f8; background:#0a1526; font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.timing-response textarea:focus { border-color:#6685ff; box-shadow:0 0 0 2px #6685ff20; }
+.timing-review { margin-top:15px; padding-top:13px; border-top:1px solid #24334a; }
+.timing-review-heading { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+.timing-review-heading span { color:#91a5c7; font-size:10px; }
+.timing-review > p { margin:6px 0 10px; color:#8698b4; font-size:10px; line-height:1.45; }
+.timing-review-row { display:flex !important; align-items:flex-start; gap:9px; margin:0 !important; padding:10px 2px; border-top:1px solid #202f46; cursor:pointer; }
+.timing-review-row input { flex:0 0 auto; margin:3px 0 0; accent-color:#6685ff; }
+.timing-review-copy { display:grid; gap:4px; min-width:0; }
+.timing-review-copy b { color:#e4ebfa; font-size:11px; line-height:1.4; }
+.timing-review-copy small { color:#8fa1bd; font-size:9px; line-height:1.45; overflow-wrap:anywhere; }
+.timing-review-copy small strong { color:#91aaff; padding:0 3px; }
+.timing-needs-review { display:flex; align-items:flex-start; gap:7px; margin-top:9px; padding:9px; border:1px solid #54452b; border-radius:7px; color:#d9bd87; background:#282216; font-size:10px; line-height:1.45; }
+.timing-needs-review svg { flex:0 0 auto; }
+.timing-error { display:flex; align-items:flex-start; gap:7px; margin-top:10px; padding:9px 10px; border:1px solid #68404a; border-radius:7px; color:#ffb7c1; background:#2b1720; font-size:10px; line-height:1.45; }
+.timing-error svg { flex:0 0 auto; }
+.timing-correction-footnote { margin-top:13px; padding-top:11px; border-top:1px solid #24334a; color:#788ba8; font-size:9px; line-height:1.55; }
+@media(max-width:650px) { .timing-correction-panel { padding:11px; } .timing-analysis-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } .timing-response-heading { align-items:flex-start; flex-direction:column; gap:3px; } }
