@@ -10,8 +10,13 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
   const [analysis, setAnalysis] = useState(null), [progress, setProgress] = useState(0), [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(''), [error, setError] = useState(''), [responseText, setResponseText] = useState('');
   const [review, setReview] = useState(null), [selectedIds, setSelectedIds] = useState([]), [undoSnapshot, setUndoSnapshot] = useState(null);
-  const importRef = useRef(null);
+  const importRef = useRef(null), activeAbortRef = useRef(null), mountedRef = useRef(true);
   useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; if (activeAbortRef.current) activeAbortRef.current.abort(); };
+  }, []);
+  useEffect(() => {
+    if (activeAbortRef.current) activeAbortRef.current.abort();
     setAnalysis(null); setProgress(0); setMessage(''); setError(''); setResponseText(''); setReview(null);
     setSelectedIds([]); setUndoSnapshot(null);
   }, [audioFile]);
@@ -19,12 +24,20 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
   const analyze = async () => {
     setError(''); setMessage(''); setReview(null); setSelectedIds([]); setAnalysis(null);
     if (!audioFile) { setError('Upload an audio file first.'); return; }
+    const controller = new AbortController();
+    activeAbortRef.current = controller;
     setBusy(true); setProgress(0);
     try {
-      const result = await analyzeAudioFile(audioFile, update => { setProgress(update.progress || 0); setMessage(update.message || 'Analyzing locally…'); });
-      setAnalysis(result); setProgress(100); setMessage('Analysis complete. The audio has not left this browser.');
-    } catch (err) { setError(err && err.message || 'Could not analyze this audio file.'); }
-    finally { setBusy(false); }
+      const result = await analyzeAudioFile(audioFile, update => {
+        if (mountedRef.current) { setProgress(update.progress || 0); setMessage(update.message || 'Analyzing locally…'); }
+      }, controller.signal);
+      if (mountedRef.current) { setAnalysis(result); setProgress(100); setMessage('Analysis complete. The audio has not left this browser.'); }
+    } catch (err) {
+      if (mountedRef.current && (!err || err.name !== 'AbortError')) setError(err && err.message || 'Could not analyze this audio file.');
+    } finally {
+      if (activeAbortRef.current === controller) activeAbortRef.current = null;
+      if (mountedRef.current) setBusy(false);
+    }
   };
   const buildPackage = () => buildTimingReviewPackage({
     audioName, duration: duration || analysis && analysis.durationSeconds || 0, analysis, lines, timelineClips, projectIn, projectOut
@@ -53,10 +66,15 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
     setError('');
     const result = validateTimingCorrections(responseText, lines, duration || analysis && analysis.durationSeconds || 0);
     if (!result.ok) { setReview(null); setSelectedIds([]); setError(result.error); return; }
-    setReview(result); setSelectedIds(result.corrections.map(item => item.lineId));
+    setReview(result); setUndoSnapshot(null); setSelectedIds(result.corrections.map(item => item.lineId));
     setMessage('Review loaded. Uncheck any line you do not want to change, then apply the selected suggestions.');
   };
   const applySelected = () => {
+    const stale = selectedCorrections.find(item => {
+      const current = lines.find(line => String(line.id) === String(item.lineId));
+      return !current || current.text !== item.text || Math.abs(Number(current.start || 0) - item.originalStart) > 0.05 || Math.abs(Number(current.end || 0) - item.originalEnd) > 0.05;
+    });
+    if (stale) { setError('The line "' + stale.text + '" changed after import. Export a fresh package and request new corrections before applying.'); return; }
     const sequenceError = validateSelectedCorrectionSequence(lines, selectedCorrections);
     if (sequenceError) { setError(sequenceError); return; }
     const snapshot = lines.map(line => ({ lineId: line.id, start: line.start, end: line.end }));
@@ -113,7 +131,7 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
       </label>)}
       {review.needsReview.length > 0 && <div className="timing-needs-review"><AlertTriangle size={15}/><span>{review.needsReview.length} line(s) need manual review and will remain unchanged.</span></div>}
       <div className="timing-action-row">
-        <button type="button" className="btn primary" onClick={applySelected} disabled={!selectedCorrections.length}>Apply selected corrections</button>
+        <button type="button" className="btn primary" onClick={applySelected} disabled={!selectedCorrections.length || !!undoSnapshot}>Apply selected corrections</button>
         <button type="button" className="btn ghost" onClick={() => setSelectedIds(review.corrections.map(item => item.lineId))}>Select all</button>
         <button type="button" className="btn ghost" onClick={() => setSelectedIds([])}>Select none</button>
         {undoSnapshot && <button type="button" className="btn ghost" onClick={undoLastApply}><RotateCcw size={14}/>Undo last apply</button>}
