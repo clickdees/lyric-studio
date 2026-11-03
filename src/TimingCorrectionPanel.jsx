@@ -10,6 +10,7 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
   const [analysis, setAnalysis] = useState(null), [progress, setProgress] = useState(0), [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(''), [error, setError] = useState(''), [responseText, setResponseText] = useState('');
   const [review, setReview] = useState(null), [selectedIds, setSelectedIds] = useState([]), [undoSnapshot, setUndoSnapshot] = useState(null);
+  const [needsReviewOnly, setNeedsReviewOnly] = useState(false);
   const importRef = useRef(null), activeAbortRef = useRef(null), mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -18,7 +19,7 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
   useEffect(() => {
     if (activeAbortRef.current) activeAbortRef.current.abort();
     setAnalysis(null); setProgress(0); setMessage(''); setError(''); setResponseText(''); setReview(null);
-    setSelectedIds([]); setUndoSnapshot(null);
+    setSelectedIds([]); setUndoSnapshot(null); setNeedsReviewOnly(false);
   }, [audioFile]);
   const selectedCorrections = useMemo(() => (review?.corrections || []).filter(item => selectedIds.includes(item.lineId)), [review, selectedIds]);
   const analyze = async () => {
@@ -66,7 +67,7 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
     setError('');
     const result = validateTimingCorrections(responseText, lines, duration || analysis && analysis.durationSeconds || 0);
     if (!result.ok) { setReview(null); setSelectedIds([]); setError(result.error); return; }
-    setReview(result); setUndoSnapshot(null); setSelectedIds(result.corrections.map(item => item.lineId));
+    setReview(result); setUndoSnapshot(null); setNeedsReviewOnly(false); setSelectedIds(result.corrections.map(item => item.lineId));
     setMessage('Review loaded. Uncheck any line you do not want to change, then apply the selected suggestions.');
   };
   const applySelected = () => {
@@ -88,7 +89,7 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
   const loadResponseFile = async file => {
     if (!file) return;
     try {
-      setResponseText(await file.text()); setReview(null); setSelectedIds([]); setError('');
+      setResponseText(await file.text()); setReview(null); setSelectedIds([]); setNeedsReviewOnly(false); setError('');
       setMessage('JSON loaded. Select “Validate & preview corrections” to inspect it.');
     } catch (_) { setError('Could not read that JSON file.'); }
   };
@@ -119,16 +120,17 @@ export function TimingCorrectionPanel({ audioFile, audioName, duration, lines, t
       <textarea value={responseText} onChange={event => setResponseText(event.target.value)} rows={7} spellCheck="false" placeholder={'Paste the complete JSON object returned by ChatGPT…'}/>
       <div className="timing-action-row">
         <button type="button" className="btn primary" onClick={importResponse} disabled={!responseText.trim() || !lines.length}>Validate & preview corrections</button>
-        <button type="button" className="btn ghost" onClick={() => { setResponseText(''); setReview(null); setSelectedIds([]); setError(''); }}>Clear</button>
+        <button type="button" className="btn ghost" onClick={() => { setResponseText(''); setReview(null); setSelectedIds([]); setNeedsReviewOnly(false); setError(''); }}>Clear</button>
       </div>
     </div>
     {review && <div className="timing-review">
       <div className="timing-review-heading"><b>Review suggested changes</b><span>{selectedCorrections.length} of {review.corrections.length} selected</span></div>
-      <p>Compare the current times with the proposed times. Nothing is applied until you approve it below.</p>
-      {review.corrections.map(item => <label className="timing-review-row" key={item.lineId}>
+      <p>{needsReviewOnly ? 'These lines need manual review and will remain unchanged. Toggle back to see every suggestion.' : 'Compare the current times with the proposed times. Nothing is applied until you approve it below.'}</p>
+      {review.needsReview.length > 0 && <div className="timing-action-row"><button type="button" className="btn small ghost" aria-pressed={needsReviewOnly} onClick={() => setNeedsReviewOnly(value => !value)} title={needsReviewOnly ? 'Show every suggestion again' : 'Hide suggestions and show only lines that need manual review'}><AlertTriangle size={14}/>{needsReviewOnly ? 'Show all lines' : `Show needs-review only (${review.needsReview.length})`}</button></div>}
+      {(needsReviewOnly ? review.needsReview.map(item => <div className="timing-review-row" key={item.lineId}><span className="timing-review-copy"><b>{item.text}</b><small>{item.reason}</small></span></div>) : review.corrections.map(item => <label className="timing-review-row" key={item.lineId}>
         <input type="checkbox" checked={selectedIds.includes(item.lineId)} onChange={event => setSelectedIds(old => event.target.checked ? [...old, item.lineId] : old.filter(id => id !== item.lineId))}/>
         <span className="timing-review-copy"><b>{item.text}</b><small>{timeLabel(item.originalStart)}–{timeLabel(item.originalEnd)} <strong>→</strong> {timeLabel(item.start)}–{timeLabel(item.end)} · {Math.round(item.confidence * 100)}% confidence</small><small>{item.reason}</small></span>
-      </label>)}
+      </label>))}
       {review.needsReview.length > 0 && <div className="timing-needs-review"><AlertTriangle size={15}/><span>{review.needsReview.length} line(s) need manual review and will remain unchanged.</span></div>}
       <div className="timing-action-row">
         <button type="button" className="btn primary" onClick={applySelected} disabled={!selectedCorrections.length || !!undoSnapshot}>Apply selected corrections</button>

@@ -1037,3 +1037,7 @@
 .timing-error svg { flex:0 0 auto; }
 .timing-correction-footnote { margin-top:13px; padding-top:11px; border-top:1px solid #24334a; color:#788ba8; font-size:9px; line-height:1.55; }
 @media(max-width:650px) { .timing-correction-panel { padding:11px; } .timing-analysis-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } .timing-response-heading { align-items:flex-start; flex-direction:column; gap:3px; } }
+.mini-progress{cursor:pointer;touch-action:none;height:16px;padding:6px 0;background-clip:content-box;outline:none;overflow:visible}
+.mini-progress:hover div{background:#7d97ff}
+.mini-progress:focus-visible{outline:2px solid #6682ff;outline-offset:2px}
+.timing-action-row .btn.small.ghost[aria-pressed="true"]{border-color:#6685ff;color:#dbe4ff;background:#1a2a4d}
